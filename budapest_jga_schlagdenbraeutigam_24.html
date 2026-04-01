@@ -393,6 +393,8 @@ select.score-inp:focus { outline: none; border-color: var(--gold); }
   text-transform: uppercase; margin-bottom: 8px;
 }
 </style>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 </head>
 <body>
 
@@ -406,7 +408,8 @@ select.score-inp:focus { outline: none; border-color: var(--gold); }
   </div>
 </div>
 
-<div class="nav-wrap">
+<div class="nav-wrap" style="position:relative">
+  <div id="sync-dot" style="position:absolute;top:6px;right:12px;font-size:10px;font-weight:700;color:#504850;letter-spacing:0.3px">○ Lokal</div>
   <div class="nav">
     <button class="nav-btn active" onclick="showPane('score')">Punkte</button>
     <button class="nav-btn" onclick="showPane('spiele')">Spiele</button>
@@ -1086,8 +1089,72 @@ function initState() {
   if (!state.padelTransferred) state.padelTransferred = false;
 }
 
+// ══════════════════════════════════════════
+// FIREBASE REALTIME SYNC
+// ══════════════════════════════════════════
+var db = null;
+var syncEnabled = false;
+var lastWriteTs = 0;
+var syncTimer = null;
+
+function initFirebase() {
+  try {
+    var app = firebase.initializeApp({
+      databaseURL: 'https://jojga-budapest-default-rtdb.europe-west1.firebasedatabase.app'
+    });
+    db = firebase.database(app);
+    syncEnabled = true;
+
+    // Listen for remote state changes
+    db.ref('state').on('value', function(snapshot) {
+      var remote = snapshot.val();
+      if (!remote) return;
+      var remoteTs = remote._ts || 0;
+      // Only apply if this came from someone else (not our own write)
+      if (remoteTs > lastWriteTs + 200) {
+        lastWriteTs = remoteTs;
+        Object.assign(state, remote);
+        delete state._ts;
+        renderScore();
+        setSyncStatus('synced');
+      }
+    });
+
+    setSyncStatus('live');
+  } catch(e) {
+    console.warn('Firebase error:', e);
+    syncEnabled = false;
+    setSyncStatus('offline');
+  }
+}
+
+function setSyncStatus(status) {
+  var el = document.getElementById('sync-dot');
+  if (!el) return;
+  if (status === 'live')    { el.textContent = '● Live';  el.style.color = '#3dd68c'; }
+  if (status === 'synced')  { el.textContent = '↑ Sync';  el.style.color = '#3dd68c';
+    setTimeout(function(){ setSyncStatus('live'); }, 1800); }
+  if (status === 'saving')  { el.textContent = '↑ ...';   el.style.color = '#DC052D'; }
+  if (status === 'offline') { el.textContent = '○ Lokal'; el.style.color = '#504850'; }
+}
+
 function saveState() {
   try { localStorage.setItem('jga_sdr_2026', JSON.stringify(state)); } catch(e) {}
+  if (!syncEnabled || !db) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(function() {
+    setSyncStatus('saving');
+    var payload = JSON.parse(JSON.stringify(state));
+    var ts = Date.now();
+    lastWriteTs = ts;
+    payload._ts = ts;
+    db.ref('state').set(payload).then(function() {
+      setSyncStatus('synced');
+    }).catch(function(e) {
+      console.warn('Firebase write error:', e);
+      setSyncStatus('offline');
+    });
+  }, 350);
 }
 
 function loadState() {
@@ -2116,6 +2183,7 @@ function avatarImg(player, large) {
 initState();
 loadState();
 renderScore();
+initFirebase();
 
 // Show iOS home screen tip on first visit
 if (/iPhone|iPad/.test(navigator.userAgent) && !window.navigator.standalone) {
